@@ -13,7 +13,7 @@ Optional (kept for fallback testing):
   PVA_SESSION, PVA_ZITOK, PVA_CF_CLEARANCE
 """
 
-import sys
+import syså
 import os
 import re
 import json
@@ -98,8 +98,8 @@ def bee_get(api_key: str, url: str) -> str:
         params={
             'api_key':       api_key,
             'url':           url,
-            'render_js':     'true',
-            'premium_proxy': 'true',
+            'render_js':     'false',
+            'stealth_proxy': 'true',
             'country_code':  'us',
         },
         timeout=60
@@ -116,7 +116,7 @@ def bee_post(api_key: str, url: str, form_data: dict) -> str:
             'api_key':       api_key,
             'url':           url,
             'render_js':     'false',
-            'premium_proxy': 'true',
+            'stealth_proxy': 'true',
             'country_code':  'us',
         },
         data=form_data,
