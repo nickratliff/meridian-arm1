@@ -79,25 +79,40 @@ def detect_county(zip_code: str) -> dict | None:
 
 
 async def login_qpublic(page, login: str, password: str):
-    """Handle qPublic login modal."""
+    """
+    Log into qPublic.net via the main login page.
+    The login is site-wide — once authenticated, the session cookie
+    works across all county subdomains.
+    """
     try:
-        # Click login link if visible
-        login_link = page.locator('a:has-text("Log In"), a:has-text("Login"), #login-link')
-        if await login_link.count() > 0:
-            await login_link.first.click()
-            await page.wait_for_timeout(1000)
+        # Navigate directly to the login page
+        await page.goto('https://qpublic.net/login', wait_until='domcontentloaded', timeout=30000)
+        await page.wait_for_timeout(2000)
 
-        # Fill credentials
-        await page.fill('input[name="username"], input[id*="user"], input[placeholder*="user" i]', login)
-        await page.fill('input[name="password"], input[type="password"]', password)
+        # Wait for the email field (placeholder: "user@email.com")
+        await page.wait_for_selector('input[placeholder="user@email.com"], input[type="email"]', timeout=20000)
 
-        # Submit
-        submit = page.locator('button[type="submit"], input[type="submit"], button:has-text("Sign In"), button:has-text("Log In")')
-        await submit.first.click()
-        await page.wait_for_load_state('networkidle', timeout=15000)
+        # Fill email
+        await page.fill('input[placeholder="user@email.com"], input[type="email"]', login)
+        await page.wait_for_timeout(400)
+
+        # Fill password
+        await page.fill('input[type="password"]', password)
+        await page.wait_for_timeout(400)
+
+        # Click the blue "Log in" button
+        await page.click('button:has-text("Log in")')
+
+        # Wait for redirect after successful login
+        await page.wait_for_load_state('load', timeout=30000)
+        await page.wait_for_timeout(2000)
+
+        # Verify login succeeded — if still on login page, credentials are wrong
+        if 'login' in page.url:
+            raise Exception("Login failed — please verify PVA_LOGIN and PVA_PASSWORD are correct")
 
     except PlaywrightTimeout:
-        raise Exception("Login timed out — check PVA credentials or site availability")
+        raise Exception("Login timed out — qPublic site may be slow, try again")
 
 
 async def search_property(page, address: str, county_config: dict):
@@ -213,12 +228,12 @@ async def scrape_pva(address: str, city: str, zip_code: str) -> dict:
         page = await context.new_page()
 
         try:
-            # Navigate to the county site
-            await page.goto(county['url'], wait_until='domcontentloaded', timeout=30000)
-            await page.wait_for_timeout(2000)
-
-            # Login
+            # Login first at the main qPublic login page
             await login_qpublic(page, login, password)
+
+            # Now navigate to the county-specific search page
+            await page.goto(county['search_url'], wait_until='domcontentloaded', timeout=30000)
+            await page.wait_for_timeout(2000)
 
             # Search for property
             await search_property(page, address, county)
