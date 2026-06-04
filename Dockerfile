@@ -20,7 +20,7 @@ RUN npm install --omit=dev
 COPY . .
 
 # Install Python dependencies
-RUN pip3 install playwright python-pptx --break-system-packages
+RUN pip3 install playwright-stealth --break-system-packages
 
 # Install Playwright Chromium + all system deps it needs
 RUN playwright install --with-deps chromium
