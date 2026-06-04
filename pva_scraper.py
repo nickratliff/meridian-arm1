@@ -88,12 +88,14 @@ def detect_county(zip_code: str) -> dict | None:
     return None
 
 
-def build_session(session_cookie: str, zitok: str) -> requests.Session:
-    """Build a requests session with the real browser cookies."""
+def build_session(session_cookie: str, zitok: str, cf_clearance: str) -> requests.Session:
+    """Build a requests session with the real browser cookies including Cloudflare clearance."""
     session = requests.Session()
     session.headers.update(HEADERS)
     session.cookies.set('ASP.NET_SessionId', session_cookie, domain='qpublic.schneidercorp.com')
     session.cookies.set('_zitok', zitok, domain='.schneidercorp.com')
+    if cf_clearance:
+        session.cookies.set('cf_clearance', cf_clearance, domain='.schneidercorp.com')
     return session
 
 
@@ -212,6 +214,7 @@ def extract_property_data(session: requests.Session, property_url: str) -> dict:
 def scrape_pva(address: str, city: str, zip_code: str) -> dict:
     session_cookie = os.environ.get('PVA_SESSION', '')
     zitok = os.environ.get('PVA_ZITOK', '')
+    cf_clearance = os.environ.get('PVA_CF_CLEARANCE', '')
 
     if not session_cookie:
         return {
@@ -227,7 +230,7 @@ def scrape_pva(address: str, city: str, zip_code: str) -> dict:
         }
 
     try:
-        session = build_session(session_cookie, zitok)
+        session = build_session(session_cookie, zitok, cf_clearance)
 
         # Test authentication by hitting the search page
         test_resp = session.get(county['search_url'], timeout=15)
