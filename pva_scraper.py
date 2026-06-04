@@ -10,6 +10,11 @@ import os
 import json
 import asyncio
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+try:
+    from playwright_stealth import stealth_async
+    STEALTH_AVAILABLE = True
+except ImportError:
+    STEALTH_AVAILABLE = False
 
 # ─────────────────────────────────────────────
 # County Routing Map
@@ -236,7 +241,11 @@ async def scrape_pva(address: str, city: str, zip_code: str) -> dict:
         context = await browser.new_context(
             user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36'
         )
-        page = await context.new_page()
+page = await context.new_page()
+
+        # Apply stealth mode to bypass Cloudflare bot detection
+        if STEALTH_AVAILABLE:
+            await stealth_async(page)
 
         try:
             # Login first at the main qPublic login page
