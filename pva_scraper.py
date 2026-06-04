@@ -98,7 +98,7 @@ def bee_get(api_key: str, url: str) -> str:
         params={
             'api_key':       api_key,
             'url':           url,
-            'render_js':     'false',
+            'render_js':     'true',
             'premium_proxy': 'true',
             'country_code':  'us',
         },
