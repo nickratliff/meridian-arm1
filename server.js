@@ -2,9 +2,27 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
+
+// Detect the correct python executable at startup
+function detectPython() {
+  const candidates = ['python3', 'python3.11', 'python3.12', 'python3.10', 'python'];
+  for (const cmd of candidates) {
+    try {
+      execSync(`${cmd} --version`, { stdio: 'ignore' });
+      console.log(`Python executable found: ${cmd}`);
+      return cmd;
+    } catch {
+      // try next
+    }
+  }
+  console.warn('WARNING: No Python executable found. PVA scraper and presentation generator will not work.');
+  return 'python3'; // fallback — will fail with a clear error
+}
+
+const PYTHON = detectPython();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -20,43 +38,69 @@ if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
 if (!fs.existsSync(presentationsDir)) fs.mkdirSync(presentationsDir, { recursive: true });
 
 // ─────────────────────────────────────────────
-// POST /api/research
-// Runs PVA scraper + stub data for Remine/AreaPro/web
-// Body: { address, city, state, zip }
+// GET /api/research-stream
+// SSE endpoint — streams results from each source as they complete.
+// All sources run in parallel. UI updates live.
+// Query: ?address=&city=&zip=
 // ─────────────────────────────────────────────
-app.post('/api/research', async (req, res) => {
-  const { address, city, state, zip } = req.body;
+app.get('/api/research-stream', async (req, res) => {
+  const { address, city = 'Lexington', state = 'KY', zip } = req.query;
 
   if (!address || !zip) {
-    return res.status(400).json({ error: 'address and zip are required' });
+    res.status(400).json({ error: 'address and zip are required' });
+    return;
   }
 
-  try {
-    // Run PVA scraper as subprocess
-    const pvaData = await runPythonScript('pva_scraper.py', [address, city, zip]);
+  // Set up SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering on Railway
+  res.flushHeaders();
 
-    // TODO: Add Remine scraper call here when credentials confirmed
-    const remineData = { status: 'pending', message: 'Remine integration pending API confirmation' };
+  // Helper: send one SSE event
+  const send = (source, status, data = {}) => {
+    const payload = JSON.stringify({ source, status, ...data });
+    res.write(`data: ${payload}\n\n`);
+    if (res.flush) res.flush(); // flush immediately to client
+  };
 
-    // TODO: Add AreaPro scraper call here when credentials confirmed
-    const areaProData = { status: 'pending', message: 'AreaPro integration pending API confirmation' };
+  // Keep-alive ping every 15s so Railway doesn't close the connection
+  const ping = setInterval(() => res.write(': ping\n\n'), 15000);
 
-    // TODO: Add web research module (neighborhood stats, school ratings, walk score)
-    const webResearchData = { status: 'pending', message: 'Web research module pending build' };
+  // ── Run all sources in parallel ──────────────────────────────────────────
+  const sources = [
 
-    return res.json({
-      success: true,
-      address: `${address}, ${city}, ${state} ${zip}`,
-      pva: pvaData,
-      remine: remineData,
-      areaPro: areaProData,
-      webResearch: webResearchData
-    });
+    // PVA — real scraper
+    runPythonScript('pva_scraper.py', [address, city, zip])
+      .then(data => {
+        if (data.error) send('pva', 'error', { message: data.error, data });
+        else            send('pva', 'done',  { data });
+      })
+      .catch(err => send('pva', 'error', { message: err.message })),
 
-  } catch (err) {
-    console.error('Research error:', err);
-    return res.status(500).json({ error: err.message || 'Research failed' });
-  }
+    // Remine — pending integration
+    Promise.resolve().then(() =>
+      send('remine', 'pending', { message: 'Remine integration pending API confirmation' })
+    ),
+
+    // AreaPro — pending integration
+    Promise.resolve().then(() =>
+      send('areapro', 'pending', { message: 'AreaPro integration pending API confirmation' })
+    ),
+
+    // Web research — pending build
+    Promise.resolve().then(() =>
+      send('web', 'pending', { message: 'Web research module pending build' })
+    ),
+
+  ];
+
+  // Wait for all to complete, then close the stream
+  await Promise.allSettled(sources);
+  clearInterval(ping);
+  send('done', 'done', { address: `${address}, ${city}, ${state} ${zip}` });
+  res.end();
 });
 
 // ─────────────────────────────────────────────
@@ -153,7 +197,7 @@ app.get('/api/agents', (req, res) => {
 function runPythonScript(scriptName, args = []) {
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(__dirname, scriptName);
-    const proc = spawn('python3', [scriptPath, ...args], {
+    const proc = spawn(PYTHON, [scriptPath, ...args], {
       env: { ...process.env }
     });
 
@@ -184,7 +228,7 @@ function runPythonScript(scriptName, args = []) {
 function runPythonScriptWithInput(scriptName, outputPath, data) {
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(__dirname, scriptName);
-    const proc = spawn('python3', [scriptPath, outputPath], {
+    const proc = spawn(PYTHON, [scriptPath, outputPath], {
       env: { ...process.env }
     });
 
