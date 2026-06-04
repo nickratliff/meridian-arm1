@@ -160,6 +160,11 @@ function runPythonScript(scriptName, args = []) {
     let stdout = '';
     let stderr = '';
 
+    // Catch spawn errors (e.g. python3 not found) without crashing Node
+    proc.on('error', err => {
+      reject(new Error(`Could not start Python: ${err.message}. Ensure python3 is installed on the server.`));
+    });
+
     proc.stdout.on('data', d => stdout += d.toString());
     proc.stderr.on('data', d => stderr += d.toString());
 
@@ -185,6 +190,11 @@ function runPythonScriptWithInput(scriptName, outputPath, data) {
 
     let stdout = '';
     let stderr = '';
+
+    // Catch spawn errors without crashing Node
+    proc.on('error', err => {
+      reject(new Error(`Could not start Python: ${err.message}. Ensure python3 is installed on the server.`));
+    });
 
     proc.stdin.write(JSON.stringify(data));
     proc.stdin.end();
