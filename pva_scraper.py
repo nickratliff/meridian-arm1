@@ -1,6 +1,7 @@
 """
 Meridian — PVA Scraper
 Supports all 7 central KY counties via Schneider Corp qPublic / Beacon platforms.
+Uses Firefox to bypass Cloudflare bot detection.
 Usage: python3 pva_scraper.py "<address>" "<city>" "<zip>"
 Returns: JSON to stdout
 """
@@ -20,8 +21,7 @@ except ImportError:
 # County Routing Map
 # ─────────────────────────────────────────────
 COUNTY_MAP = {
-    # ZIP prefix → county config
-    "405": {  # Fayette (Lexington)
+    "405": {
         "name": "Fayette",
         "platform": "qpublic",
         "url": "https://qpublic.schneidercorp.com/Application.aspx?AppID=1019&LayerID=21504&PageTypeID=4",
@@ -72,11 +72,8 @@ COUNTY_MAP = {
 }
 
 def detect_county(zip_code: str) -> dict | None:
-    """Route to correct county config based on zip code."""
-    # Try exact match first
     if zip_code in COUNTY_MAP:
         return COUNTY_MAP[zip_code]
-    # Try 3-digit prefix (covers all Fayette 405xx zips)
     prefix = zip_code[:3]
     if prefix in COUNTY_MAP:
         return COUNTY_MAP[prefix]
@@ -84,48 +81,49 @@ def detect_county(zip_code: str) -> dict | None:
 
 
 async def login_qpublic(page, login: str, password: str):
-    """
-    Log into qPublic.net via the main login page.
-    The login is site-wide — once authenticated, the session cookie
-    works across all county subdomains.
-    """
+    """Log into qPublic via the login page."""
     try:
-        # Navigate directly to the login page
-        await page.goto('https://qpublic.net/login', wait_until='domcontentloaded', timeout=30000)
-        await page.wait_for_timeout(2000)
+        await page.goto(
+            'https://qpublic.schneidercorp.com/Account/Login?returnUrl=%2f',
+            wait_until='networkidle',
+            timeout=45000
+        )
+        await page.wait_for_timeout(3000)
 
-        # Wait for the email field (placeholder: "user@email.com")
-        await page.wait_for_selector('input[placeholder="user@email.com"], input[type="email"]', timeout=20000)
+        # Check if Cloudflare is blocking
+        title = await page.title()
+        if 'just a moment' in title.lower() or 'cloudflare' in title.lower():
+            # Wait for Cloudflare to clear
+            await page.wait_for_timeout(8000)
+            title = await page.title()
+            if 'just a moment' in title.lower():
+                raise Exception("Cloudflare challenge not cleared — try again in a moment")
 
-        # Fill email
-        await page.fill('input[placeholder="user@email.com"], input[type="email"]', login)
-        await page.wait_for_timeout(400)
+        # Wait for email field
+        await page.wait_for_selector('input[type="email"], input[placeholder*="email" i], input[name*="email" i]', timeout=20000)
 
-        # Fill password
+        # Fill credentials
+        await page.fill('input[type="email"], input[placeholder*="email" i], input[name*="email" i]', login)
+        await page.wait_for_timeout(500)
         await page.fill('input[type="password"]', password)
-        await page.wait_for_timeout(400)
+        await page.wait_for_timeout(500)
 
-        # Click the blue "Log in" button
-        await page.click('button:has-text("Log in")')
-
-        # Wait for redirect after successful login
-        await page.wait_for_load_state('load', timeout=30000)
+        # Submit
+        await page.click('button[type="submit"], input[type="submit"], button:has-text("Log in"), button:has-text("Sign in")')
+        await page.wait_for_load_state('networkidle', timeout=30000)
         await page.wait_for_timeout(2000)
 
-        # Verify login succeeded — if still on login page, credentials are wrong
-        if 'login' in page.url:
-            raise Exception("Login failed — please verify PVA_LOGIN and PVA_PASSWORD are correct")
+        if 'login' in page.url.lower() or 'account' in page.url.lower():
+            raise Exception("Login failed — verify PVA_LOGIN and PVA_PASSWORD are correct")
 
     except PlaywrightTimeout:
         raise Exception("Login timed out — qPublic site may be slow, try again")
 
 
 async def search_property(page, address: str, county_config: dict):
-    """Navigate to search and find the property."""
     await page.goto(county_config['search_url'], wait_until='domcontentloaded', timeout=30000)
     await page.wait_for_timeout(2000)
 
-    # Try address search field
     search_selectors = [
         'input[placeholder*="address" i]',
         'input[id*="address" i]',
@@ -139,7 +137,6 @@ async def search_property(page, address: str, county_config: dict):
             field = page.locator(sel)
             if await field.count() > 0:
                 await field.first.fill(address)
-                # Press enter or click search
                 await field.first.press('Enter')
                 await page.wait_for_load_state('networkidle', timeout=15000)
                 break
@@ -148,17 +145,13 @@ async def search_property(page, address: str, county_config: dict):
 
 
 async def extract_property_data(page) -> dict:
-    """Extract property details from the result page."""
     data = {}
 
-    # Helper: grab text by label
     async def get_field(label_text: str) -> str:
         try:
-            # Try table-based layout (most qPublic pages)
             cell = page.locator(f'td:has-text("{label_text}") + td, th:has-text("{label_text}") + td')
             if await cell.count() > 0:
                 return (await cell.first.inner_text()).strip()
-            # Try label/value div layout
             label = page.locator(f'.label:has-text("{label_text}"), .field-label:has-text("{label_text}")')
             if await label.count() > 0:
                 parent = label.first.locator('..')
@@ -169,28 +162,27 @@ async def extract_property_data(page) -> dict:
             pass
         return ''
 
-    # Standard PVA fields
     field_map = {
-        'parcel_id':       ['Parcel ID', 'Parcel Number', 'Account Number'],
-        'owner_name':      ['Owner Name', 'Owner'],
-        'mailing_address': ['Mailing Address', 'Owner Address'],
-        'property_address':['Property Address', 'Location Address', 'Site Address'],
+        'parcel_id':        ['Parcel ID', 'Parcel Number', 'Account Number'],
+        'owner_name':       ['Owner Name', 'Owner'],
+        'mailing_address':  ['Mailing Address', 'Owner Address'],
+        'property_address': ['Property Address', 'Location Address', 'Site Address'],
         'legal_description':['Legal Description', 'Legal Desc'],
-        'land_use':        ['Land Use', 'Property Class', 'Property Use'],
-        'lot_size':        ['Lot Size', 'Land Area', 'Acreage'],
-        'year_built':      ['Year Built', 'Yr Built'],
-        'total_sqft':      ['Total Sq Ft', 'Total Living Area', 'Gross Building Area'],
-        'bedrooms':        ['Bedrooms', 'Bed'],
-        'bathrooms':       ['Bathrooms', 'Bath', 'Full Baths'],
-        'assessed_value':  ['Assessed Value', 'Total Assessed', 'Total Value'],
-        'land_value':      ['Land Value', 'Land Assessed'],
-        'building_value':  ['Building Value', 'Improvement Value'],
-        'tax_amount':      ['Tax Amount', 'Total Tax', 'Annual Tax'],
-        'last_sale_date':  ['Last Sale Date', 'Sale Date', 'Deed Date'],
-        'last_sale_price': ['Last Sale Price', 'Sale Price', 'Deed Amount'],
-        'subdivision':     ['Subdivision', 'Sub Division', 'Plat'],
-        'zoning':          ['Zoning', 'Zone'],
-        'school_district': ['School District', 'District'],
+        'land_use':         ['Land Use', 'Property Class', 'Property Use'],
+        'lot_size':         ['Lot Size', 'Land Area', 'Acreage'],
+        'year_built':       ['Year Built', 'Yr Built'],
+        'total_sqft':       ['Total Sq Ft', 'Total Living Area', 'Gross Building Area'],
+        'bedrooms':         ['Bedrooms', 'Bed'],
+        'bathrooms':        ['Bathrooms', 'Bath', 'Full Baths'],
+        'assessed_value':   ['Assessed Value', 'Total Assessed', 'Total Value'],
+        'land_value':       ['Land Value', 'Land Assessed'],
+        'building_value':   ['Building Value', 'Improvement Value'],
+        'tax_amount':       ['Tax Amount', 'Total Tax', 'Annual Tax'],
+        'last_sale_date':   ['Last Sale Date', 'Sale Date', 'Deed Date'],
+        'last_sale_price':  ['Last Sale Price', 'Sale Price', 'Deed Amount'],
+        'subdivision':      ['Subdivision', 'Sub Division', 'Plat'],
+        'zoning':           ['Zoning', 'Zone'],
+        'school_district':  ['School District', 'District'],
     }
 
     for key, labels in field_map.items():
@@ -200,7 +192,6 @@ async def extract_property_data(page) -> dict:
                 data[key] = val
                 break
 
-    # Fallback: grab full page text for manual parsing
     if not data:
         data['raw_text'] = await page.inner_text('body')
 
@@ -212,10 +203,7 @@ async def scrape_pva(address: str, city: str, zip_code: str) -> dict:
     password = os.environ.get('PVA_PASSWORD', '')
 
     if not login or not password:
-        return {
-            'error': 'PVA credentials not set in environment variables',
-            'address': address
-        }
+        return {'error': 'PVA credentials not set in environment variables', 'address': address}
 
     county = detect_county(zip_code)
     if not county:
@@ -226,61 +214,34 @@ async def scrape_pva(address: str, city: str, zip_code: str) -> dict:
         }
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-    headless=True,
-    args=[
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-    ]
-)
+        # Use Firefox — less likely to be blocked by Cloudflare than Chromium
+        browser = await p.firefox.launch(headless=True)
         context = await browser.new_context(
-            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36'
+            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0'
         )
-page = await context.new_page()
+        page = await context.new_page()
 
-        # Apply stealth mode to bypass Cloudflare bot detection
         if STEALTH_AVAILABLE:
             await stealth_async(page)
 
         try:
-            # Login first at the main qPublic login page
             await login_qpublic(page, login, password)
-
-            # Now navigate to the county-specific search page
             await page.goto(county['search_url'], wait_until='domcontentloaded', timeout=30000)
             await page.wait_for_timeout(2000)
-
-            # Search for property
             await search_property(page, address, county)
 
-            # Check for no results
             no_results = await page.locator('text="No results", text="no records found", text="0 records"').count()
             if no_results > 0:
-                return {
-                    'error': 'No property found for this address',
-                    'county': county['name'],
-                    'address': address
-                }
+                return {'error': 'No property found for this address', 'county': county['name'], 'address': address}
 
-            # Extract data
             property_data = await extract_property_data(page)
             property_data['county'] = county['name']
-            property_data['source'] = 'qPVA via qPublic/Beacon'
+            property_data['source'] = 'PVA via qPublic'
             property_data['address_searched'] = f'{address}, {city}, KY {zip_code}'
-
             return property_data
 
         except Exception as e:
-            return {
-                'error': str(e),
-                'county': county.get('name', 'unknown'),
-                'address': address
-            }
+            return {'error': str(e), 'county': county.get('name', 'unknown'), 'address': address}
         finally:
             await browser.close()
 
