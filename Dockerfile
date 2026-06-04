@@ -1,5 +1,6 @@
 # Meridian Arm 1 — Railway Dockerfile
-# Node 20 + Python 3 + Playwright Firefox (bypasses Cloudflare)
+# Node 20 + Python 3 + requests/beautifulsoup (no browser needed for PVA)
+# Playwright + Chromium kept for generate_pptx.py
 
 FROM node:20-bookworm
 
@@ -20,10 +21,10 @@ RUN npm install --omit=dev
 COPY . .
 
 # Install Python dependencies
-RUN pip3 install playwright python-pptx playwright-stealth --break-system-packages
+RUN pip3 install requests beautifulsoup4 playwright python-pptx --break-system-packages
 
-# Install Playwright Firefox + Chromium with all system deps
-RUN playwright install --with-deps chromium firefox
+# Install Playwright Chromium for presentation generation only
+RUN playwright install --with-deps chromium
 
 EXPOSE 3000
 
