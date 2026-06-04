@@ -1,5 +1,5 @@
 # Meridian Arm 1 — Railway Dockerfile
-# Node 20 + Python 3 + Playwright Chromium
+# Node 20 + Python 3 + Playwright Firefox (bypasses Cloudflare)
 
 FROM node:20-bookworm
 
@@ -22,8 +22,8 @@ COPY . .
 # Install Python dependencies
 RUN pip3 install playwright python-pptx playwright-stealth --break-system-packages
 
-# Install Playwright Chromium + all system deps it needs
-RUN playwright install --with-deps chromium
+# Install Playwright Firefox + Chromium with all system deps
+RUN playwright install --with-deps chromium firefox
 
 EXPOSE 3000
 
